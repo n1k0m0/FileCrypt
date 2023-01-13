@@ -1,5 +1,5 @@
 # FileCrypt
-Small console application that allows the encryption of files with AES and using a password (key derived using PKCS7)
+Small console application that allows the encryption of files with AES using a password
 
 This program is a small C# console application that allows the encryption and decryption of a file using AES.
 It furthermore computes an HMAC (with SHA512) which it adds to the "header" of the encrypted file, 
