@@ -1,5 +1,5 @@
 ﻿/*
-   Copyright 2022 Nils Kopal <Nils.Kopal<at>CrypTool.org>
+   Copyright 2022-2025 Nils Kopal <Nils.Kopal<at>CrypTool.org>
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -155,8 +155,9 @@ namespace FileCrypt
             byte[] key = rfc2898DeriveBytes.GetBytes(32);
             byte[] hmackey = rfc2898DeriveBytes.GetBytes(32);
 
-            //compute HMAC of input file
-            byte[] hmac = ComputeHMAC(sourceFile, hmackey);
+            // *** Streaming HMAC over PLAINTEXT during encryption ***
+            // We don't know the final HMAC yet, so we write a placeholder and seek back later.
+            HMACSHA512 hmacStream = new HMACSHA512(hmackey);
 
             //create AES
             Aes aes = Aes.Create();
@@ -172,10 +173,12 @@ namespace FileCrypt
             using (FileStream inputFileStream = new FileStream(sourceFile, FileMode.Open, FileAccess.Read))
             using (FileStream outputFileStream = new FileStream(destinationFile, FileMode.CreateNew, FileAccess.Write))
             {
-                //write "header" (iv, salt, and hmac)
+                //write "header" (iv, salt, and HMAC placeholder)
                 outputFileStream.Write(iv, 0, iv.Length);
                 outputFileStream.Write(salt, 0, salt.Length);
-                outputFileStream.Write(hmac, 0, hmac.Length);
+                long hmacPosition = outputFileStream.Position; // remember where HMAC is stored
+                byte[] hmacPlaceholder = new byte[64];
+                outputFileStream.Write(hmacPlaceholder, 0, hmacPlaceholder.Length);
                 outputFileStream.Flush();
 
                 //encrypt and write output file
@@ -187,6 +190,9 @@ namespace FileCrypt
                     int readCount = 0, percentage = 0;
                     while ((readCount = inputFileStream.Read(buffer, 0, buffer.Length)) > 0)
                     {
+                        // update streaming HMAC with plaintext chunk
+                        hmacStream.TransformBlock(buffer, 0, readCount, null, 0);
+
                         totalBytesRead += readCount;
                         encryptStream.Write(buffer, 0, readCount);
                         if (DateTime.Now >= nextUpdateTime)
@@ -198,6 +204,18 @@ namespace FileCrypt
                             outputFileStream.Flush();
                         }
                     }
+
+                    // finalize HMAC (no more data)
+                    hmacStream.TransformFinalBlock(new byte[0], 0, 0);
+                    byte[] finalHmac = hmacStream.Hash;
+
+                    // finish encryption
+                    encryptStream.FlushFinalBlock();
+                    outputFileStream.Flush();
+
+                    // seek back and write final HMAC into header
+                    outputFileStream.Seek(hmacPosition, SeekOrigin.Begin);
+                    outputFileStream.Write(finalHmac, 0, finalHmac.Length);
                     outputFileStream.Flush();
 
                     percentage = (int)(100f * totalBytesRead / inputFileSize);
@@ -265,6 +283,9 @@ namespace FileCrypt
                 //we already read the iv, the salt, and the HMAC
                 totalBytesRead = iv.Length + salt.Length + hmac.Length;
 
+                // *** Streaming HMAC over PLAINTEXT during decryption ***
+                HMACSHA512 hmacStream = new HMACSHA512(hmackey);
+
                 using (CryptoStream decryptStream = new CryptoStream(inputFileStream, aes.CreateDecryptor(), CryptoStreamMode.Read))
                 {
                     DateTime nextUpdateTime = DateTime.Now.AddSeconds(1);
@@ -274,6 +295,9 @@ namespace FileCrypt
                     int percentage = 0;
                     while ((readCount = decryptStream.Read(buffer, 0, buffer.Length)) > 0)
                     {
+                        // update streaming HMAC with plaintext chunk
+                        hmacStream.TransformBlock(buffer, 0, readCount, null, 0);
+
                         totalBytesRead += readCount;
                         outputFileStream.Write(buffer, 0, readCount);
                         if (DateTime.Now >= nextUpdateTime)
@@ -285,47 +309,29 @@ namespace FileCrypt
                             outputFileStream.Flush();
                         }
                     }
+
+                    // finalize HMAC (no more data)
+                    hmacStream.TransformFinalBlock(new byte[0], 0, 0);
+                    byte[] computedHmac = hmacStream.Hash;
+
                     outputFileStream.Flush();
 
                     percentage = (int)(100f * totalBytesRead / inputFileSize);
                     Console.WriteLine("\rProgress {0}%                           ", percentage);
+
+                    Console.WriteLine("File successfully decrypted");
+
+                    //compare HMACs (header vs. computed)
+                    if (ArrayEquals(hmac, computedHmac))
+                    {
+                        Console.WriteLine("HMAC is valid. File was not manipulated");
+                    }
+                    else
+                    {
+                        Console.WriteLine("HMAC is invalid. File was probably manipulated");
+                    }
                 }
             }
-            Console.WriteLine("File successfully decrypted");
-
-            //compute HMAC of output file
-            byte[] hmac2 = ComputeHMAC(destinationFile, hmackey);
-
-            //compare HMACs            
-            if (ArrayEquals(hmac, hmac2))
-            {
-                Console.WriteLine("HMAC is valid. File was not manipulated");
-            }
-            else
-            {
-                Console.WriteLine("HMAC is invalid. File was probably manipulated");
-            }
-        }
-
-        /// <summary>
-        /// Computes an HMAC of the file using the given hmackey
-        /// </summary>
-        /// <param name="file"></param>
-        /// <param name="hmackey"></param>
-        /// <returns></returns>
-        private static byte[] ComputeHMAC(string file, byte[] hmackey)
-        {
-            Console.WriteLine("Computing hmac of {0}", file);
-            byte[] hmac; //HMACSHA512 is 64 bytes
-            using (HMACSHA512 hMACSHA = new HMACSHA512(hmackey))
-            {
-                using (FileStream inputFileStream = new FileStream(file, FileMode.Open, FileAccess.Read))
-                {
-                    hmac = hMACSHA.ComputeHash(inputFileStream);
-                }
-            }
-            Console.WriteLine("Computing hmac finished");
-            return hmac;
         }
 
         /// <summary>
