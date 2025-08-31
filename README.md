@@ -185,10 +185,3 @@ FileCrypt decrypt server.log.enc server_restored.log
 ## License
 
 Licensed under the Apache License, Version 2.0. See the `LICENSE` file or https://www.apache.org/licenses/LICENSE-2.0 for details.
-
----
-
-## Acknowledgments
-
-Original author: Nils Kopal  
-Project idea and educational focus: CrypTool.org context
